@@ -1,0 +1,40 @@
+# RSL-RL PPO hyperparameters for the OpenArm parcel-flip task.
+# Mirrors OpenArmFlipPPORunnerCfg (openarm_lab/openarm_flip/agents/rsl_rl_ppo_cfg.py).
+# train.py applies these values on top of the registered agent config.
+
+seed: 42
+device: cuda:0          # cpu | cuda:N
+num_envs: 1024         # environments (GPU; CPU users: lower to 256)
+
+# --- runner ---
+class_name: OnPolicyRunner
+num_steps_per_env: 24
+max_iterations: 20000
+save_interval: 200
+experiment_name: openarm_flip
+init_at_random_ep_len: true
+empirical_normalization: false
+obs_groups:
+  actor: [policy]
+  critic: [policy]
+
+# --- policy (MLP) ---
+policy:
+  hidden_dims: [256, 128, 64]
+  activation: elu
+  init_noise_std: 1.0
+
+# --- PPO algorithm ---
+algorithm:
+  value_loss_coef: 1.0
+  use_clipped_value_loss: true
+  clip_param: 0.2
+  entropy_coef: 0.005
+  num_learning_epochs: 5
+  num_mini_batches: 4
+  learning_rate: 0.001
+  schedule: adaptive
+  gamma: 0.99
+  lam: 0.95
+  desired_kl: 0.01
+  max_grad_norm: 1.0

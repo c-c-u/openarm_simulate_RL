@@ -1,0 +1,48 @@
+#usda 1.0
+(
+    defaultPrim = "Parcel"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+# Labeled parcel for the OpenArm flip task.
+#
+# * /Parcel           — rigid body (RigidBodyAPI; mass/inertia configured by the
+#                        Isaac Lab RigidObjectCfg at spawn time).
+# * /Parcel/Body      — the box (0.09 x 0.09 x 0.07 m), the only collider.
+# * /Parcel/Label     — visual-only "express label" on the local +Z face
+#                        (no collision). The local +Z face is the "label face"
+#                        the RL task must rotate to point up.
+#
+# Colours are authored via `primvars:displayColor` (vertex colours) instead of
+# UsdPreviewSurface material bindings: RTX in this Isaac Sim build does not
+# honour a material binding on native Cube geometry (renders it flat grey /
+# white), while displayColor is always respected.
+
+def Xform "Parcel" (
+    kind = "component"
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+)
+{
+    def Cube "Body" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double size = 1  # default is 2 (extent -1..1) -> scale would double
+        float3 xformOp:scale = (0.09, 0.09, 0.07)
+        uniform token[] xformOpOrder = ["xformOp:scale"]
+        color3f[] primvars:displayColor = [(0.66, 0.45, 0.24)]  # kraft brown (visible under strong light)
+    }
+
+    def Cube "Label"
+    {
+        double size = 1
+        # xformOpOrder = [scale, translate] composes as M = S * T: the translate
+        # is applied in the pre-scale frame and multiplied by the z-scale, so
+        # 70.4 * 0.0005 = 0.0352 m -> label center just above the box top face.
+        float3 xformOp:scale = (0.078, 0.048, 0.0005)
+        double3 xformOp:translate = (0, 0, 70.4)
+        uniform token[] xformOpOrder = ["xformOp:scale", "xformOp:translate"]
+        color3f[] primvars:displayColor = [(1.0, 1.0, 1.0)]  # plain white label
+    }
+}
