@@ -14,10 +14,21 @@
 #                        (no collision). The local +Z face is the "label face"
 #                        the RL task must rotate to point up.
 #
-# Colours are authored via `primvars:displayColor` (vertex colours) instead of
-# UsdPreviewSurface material bindings: RTX in this Isaac Sim build does not
-# honour a material binding on native Cube geometry (renders it flat grey /
-# white), while displayColor is always respected.
+# 表面外观：**盒子用纯色**（primvars:displayColor），不绑纹理 —— 纸箱纹理试过几轮，
+# 观感反而更假、还容易做出木纹感，最终决定回到纯色。标签仍使用图片纹理
+# （express_label.png），由 `mdp/events.py: apply_scene_textures` 在 startup 时
+# 统一创建并绑定（材质放在 /World/Looks 下**全局共享**，避免每个环境复制一份）。
+#
+# UV（primvars:st）依然保留：一是标签的图片纹理需要它，二是将来若要给盒子换回
+# 纹理可直接复用，不必再改资产。
+#
+# 历史坑（已查明）：早先以为"RTX 不认 Cube 上的材质绑定"，其实真正原因是
+# **Cube 默认没有 st primvar**——没有 UV，UsdUVTexture 采样失败，表面就渲染成灰/白。
+# 补上 st 之后 Cube 也能正常贴图（实测盒面渲染色与纹理均值吻合）。
+#
+# UV 约定：Cube 的面顺序为 [-Z, +Z, -Y, +Y, -X, +X]，每个面 4 个角，
+# 故 st 共 24 个值、interpolation = faceVarying。每个面按"u 沿该面第一坐标轴、
+# v 沿第二坐标轴"展开（+Z 面即标签面：u→+X，v→+Y，保证标签图案方向正确）。
 
 def Xform "Parcel" (
     kind = "component"
@@ -31,7 +42,18 @@ def Xform "Parcel" (
         double size = 1  # default is 2 (extent -1..1) -> scale would double
         float3 xformOp:scale = (0.09, 0.09, 0.07)
         uniform token[] xformOpOrder = ["xformOp:scale"]
-        color3f[] primvars:displayColor = [(0.66, 0.45, 0.24)]  # kraft brown (visible under strong light)
+        color3f[] primvars:displayColor = [(0.66, 0.45, 0.24)]  # kraft brown（盒子就用这个纯色）
+        # 6 面 x 4 角 = 24 个 UV
+        texCoord2f[] primvars:st = [
+            (1, 0), (0, 0), (0, 1), (1, 1),   # -Z
+            (0, 0), (0, 1), (1, 1), (1, 0),   # +Z
+            (0, 0), (0, 1), (1, 1), (1, 0),   # -Y
+            (1, 0), (0, 0), (0, 1), (1, 1),   # +Y
+            (0, 0), (0, 1), (1, 1), (1, 0),   # -X
+            (1, 0), (1, 1), (0, 1), (0, 0),   # +X
+        ] (
+            interpolation = "faceVarying"
+        )
     }
 
     def Cube "Label"
@@ -43,6 +65,17 @@ def Xform "Parcel" (
         float3 xformOp:scale = (0.078, 0.048, 0.0005)
         double3 xformOp:translate = (0, 0, 70.4)
         uniform token[] xformOpOrder = ["xformOp:scale", "xformOp:translate"]
-        color3f[] primvars:displayColor = [(1.0, 1.0, 1.0)]  # plain white label
+        color3f[] primvars:displayColor = [(1.0, 1.0, 1.0)]  # fallback colour
+        # 可见面是 +Z（标签朝上那面）；UV 同样 6 面 x 4 角
+        texCoord2f[] primvars:st = [
+            (1, 0), (0, 0), (0, 1), (1, 1),   # -Z
+            (0, 0), (0, 1), (1, 1), (1, 0),   # +Z（标签面：u→+X, v→+Y）
+            (0, 0), (0, 1), (1, 1), (1, 0),   # -Y
+            (1, 0), (0, 0), (0, 1), (1, 1),   # +Y
+            (0, 0), (0, 1), (1, 1), (1, 0),   # -X
+            (1, 0), (1, 1), (0, 1), (0, 0),   # +X
+        ] (
+            interpolation = "faceVarying"
+        )
     }
 }

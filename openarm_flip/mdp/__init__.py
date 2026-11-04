@@ -13,7 +13,7 @@ from isaaclab.envs.mdp.events import (
 )
 
 from .actions import CoupledJointPositionActionCfg, CoupledJointPositionAction
-from .events import reset_parcel_root_state
+from .events import apply_scene_textures, reset_parcel_root_state, sync_wrist_cameras
 from .observations import parcel_label_normal_w
 from .rewards import (
     arm_body_contact_penalty,

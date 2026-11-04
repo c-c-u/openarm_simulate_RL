@@ -11,12 +11,15 @@
 #   logs/rsl_rl/openarm_flip*/<时间戳>/ 下存放 model_*.pt checkpoint 与
 #   TensorBoard events；需要分享某个训练好的模型时，请用 Git LFS 或
 #   GitHub Releases 单独发布，不要提交进仓库。
+# 例外：models/ 下存放"已确认的最优模型"（经权重手术/实测，体积约 1.4 MB），
+# 作为项目正式发布版本随仓库分发（见 models/README.md）。
 # ---------------------------------------------------------------------------
 logs/
 *.pt
 *.pth
 *.onnx
 *.tflite
+!models/*.pt
 
 # ---------------------------------------------------------------------------
 # URDF -> USD 转换缓存（由脚本按需重新生成，体积大）
@@ -80,3 +83,6 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+
+# XR (CloudXR/IsaacTeleop) 依赖隔离目录 —— 用 --no-deps 安装，不入库
+.xr_deps/

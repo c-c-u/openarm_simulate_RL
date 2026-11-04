@@ -124,14 +124,66 @@ CAM_WIDTH, CAM_HEIGHT = 320, 240
 # Resolution of the front camera when it feeds the policy image observation
 # (smaller = cheaper rendering + CNN). 4:3 like the display cameras.
 POLICY_CAM_WIDTH, POLICY_CAM_HEIGHT = 96, 72
+# 前视相机（非策略图像观测时）的分辨率。用 640x480 而非 320x240 是有意的：
+# 12 mm 广角（见 FRONT_CAM_FOCAL）下 640x480 的像素密度恰好等于"24 mm + 320x240"，
+# 也就是**盒子在画面上占的像素数不变（86 px vs 原来 94 px），但视野大了 9 倍**。
+FRONT_CAM_WIDTH, FRONT_CAM_HEIGHT = 640, 480
 CAM_DATA_TYPES = ["rgb", "distance_to_image_plane"]
-# Camera in front of the midpoint of the two arm shoulders (shoulders sit at
-# (0, +-0.031, 0.698) in the v1 URDF, so the midpoint is (0, 0, ~0.70)), at
-# shoulder height, centred between the arms, looking diagonally down at the
-# parcel on the table.
-FRONT_CAM_POS = (0.15, 0.0, 0.70)
-FRONT_CAM_TARGET = (0.30, PARCEL_XY[1], 0.40)  # looks at the parcel on the table
-WRIST_CAM_LOCAL = (0.0, 0.0, -0.06)        # 6 cm below the EE (tool axis -Z)
+# 前视相机：机器人正前方（两肩中点 (0,0,~0.70) 前方 15 cm），俯视桌面上的盒子。
+#
+# 取景历史（重要，别改回去）：
+#   原配置 24 mm / pos (0.15,0,0.70) / target (0.30,0.10,0.40) 视场只有 47°，
+#   距盒子仅 0.35 m。实测采 100 帧：翻转时策略把盒子推走 15.8 cm（+x/+y），
+#   盒子自第 ~40 帧起因顶部越界被截断，**62% 的帧可见面积不足 50%**，而第 40 帧
+#   恰好是盒子翻正的时刻 —— 最有信息量的一段全丢了。
+#
+#   按工作包络（x 0.24-0.52, y 0.02-0.30, z 0.41-0.46 m，4 种朝向，2700 个采样点）
+#   评估候选相机，结论：
+#     24 mm 现状              包络覆盖 11.0%（最大越界 175 px）
+#     12 mm 原位 + 重新瞄准   包络覆盖 99.7%（最大越界 2 px）  <- 采用
+#     8.5 mm                  覆盖 100% 但盒子只剩 28 px，过度加宽反而有害
+#   注：**要覆盖的范围固定时，盒子像素数只由"覆盖范围"和"分辨率"决定，与焦距无关**
+#   （焦距变小就能靠近，两个效应正好抵消）。所以加宽 FOV 不损失分辨率。
+# 朝向说明（实测分解，别凭感觉调）：
+#   俯仰 pitch ≈ 50°（下视）—— **几何必需**：相机在肩高 0.72 m，盒子在桌面约 0.42 m，
+#     不下视就看不到桌面。水平相机（pitch=0）时盒子在光轴下方 38°+，而已知垂直半视场
+#     只有 33.2°，盒子直接掉出画面。想减小 pitch 只能把相机**后移**
+#     （pitch = atan(0.30 / 水平距离)：退到 x=-0.05 才降到 37°）。
+#   偏航 yaw = 0（光轴严格平行机器人 +x）—— 原先 yaw 有 31°，因为相机在机器人中线
+#     y=0 而盒子在 y=0.10，靠得很近（0.20 m）时 atan(0.12/0.20)=31°，画面里桌面长边
+#     是斜的。yaw=0 时相机右轴恰好 = 世界 +y，桌面长边在画面里严格水平。
+#   横滚 roll = 0 —— look-at 构造保证相机右轴水平（cross(world_up, fwd) 必水平）。
+#
+# 为什么相机要放在 y=0.14 这条纵线上（而不是机器人中线 y=0）：盒子不在中线上。
+# 实测取景率（scripts/probe_workspace.py，64 envs × 600 步、34793 个真实样本，
+# 判据 = 盒子 8 角点全部落在画面内）：
+#     相机位置           光轴      yaw    整回合   达标前且前60步   盒子像素
+#     (0.15, 0,    0.72) 瞄准盒子  31.0°   87.4%      96.8%        133 px
+#     (0.10, 0.14, 0.72) 沿 +x      0.0°   85.0%      97.5%        130 px  <- 采用
+#     (0.15, 0,    0.72) 沿 +x      0.0°   51.3%      85.0%        151 px  <- 字面"正前方"，不可用
+# 即"光轴沿正前方"与"盒子留在画面内"两者，只有在相机与盒子同一纵线上时才能兼得；
+# 坚持把相机留在机器人中线，就只能斜着看（否则丢掉近一半取景率）。
+# 另注：整回合取景率偏低是"盒子被推远"造成的，配合采集脚本的
+# --window_steps/--after_success 窗口即可回到 97.5%。
+FRONT_CAM_POS = (0.10, 0.14, 0.72)
+FRONT_CAM_TARGET = (0.35, 0.14, 0.42)  # 与相机同 y => yaw 严格为 0；瞄准盒子轨迹中心
+# 前视相机焦距（mm）。12 mm 配合 20.955 mm 水平像幅 => 水平视场 82.3°、垂直 66.4°。
+# 腕部相机保持 24 mm（它们只看 15 cm 外的指尖，不需要广角）。
+FRONT_CAM_FOCAL = 12.0
+WRIST_CAM_FOCAL = 24.0
+
+# 腕部相机在 link7 局部系中的安装偏移：沿 **局部 +X 15 cm**。
+# 几何依据（实测 link7 局部系）：
+#   * 夹爪开合方向 = 局部 -Y（两指尖连线方向）
+#   * 工具轴 / 腕部转轴 = 局部 +Z（指向指尖，与 link7->hand 方向余弦 0.921）
+#   * 垂直于这两者 = 局部 X 轴；其中 +X 在世界系 z 分量为正（左 +0.223 / 右 +0.205），
+#     即位于夹爪的"上方"一侧 —— 正是所需安装位（既不挡开合方向，也不挡工具轴前方视野）。
+#   * 注：早期版本用的是 (0,0,-0.06)（沿工具轴反向 6 cm）+ 恒等朝向，方向是反的，
+#     相机被装到"手腕后方并朝后看"自身几何，图像全黑。
+WRIST_CAM_LOCAL = (0.15, 0.0, 0.0)
+# 相机注视点：从 link7 沿工具轴前方这么远（米）。0.13 ≈ 指尖位置，
+# 让相机从侧上方俯视夹爪；调大（如 0.25）则更朝前看盒子可能出现的位置。
+WRIST_CAM_LOOKAT_FORWARD = 0.13
 
 
 def _camera_look_at_quat_xyzw(eye: tuple[float, float, float], target: tuple[float, float, float]):
@@ -343,11 +395,35 @@ class OpenArmFlipSceneCfg(InteractiveSceneCfg):
         collision_group=-1,
     )
 
+    # --- 光照（三层：环境 + 主光 + 补光）---
+    # 之前只有一盏 1200 强度的穹顶光 —— 均匀无方向，没有阴影层次，浅色物体还会被
+    # "洗白"，这正是观感偏假的主要原因。改为：
+    #   dome  : 环境填充光（弱，模拟室内漫反射）
+    #   key   : 主光（方向光，斜向照下，产生明确阴影与高光）
+    #   fill  : 补光（另一侧低强度，避免阴影死黑）
+    # 强度经过实测标定：三盏灯合计过强会让画面均值冲到 ~238（接近过曝、丢细节）。
+    # 当前档位：**环境 40 / 主光 300 / 补光 320** —— 前视整体亮度约 200（比最亮档低 ~10%），
+    # 明暗对比更强、阴影更明显，且过曝 0%、死黑 0%。
+    # 历史档位（供回退/对比）：
+    #   1200 单灯  ->  环境220+主光1100  ->  环境150+主光1100  ->  环境120+主光900  ->  当前
+    # ⚠️ 调整灯光后要给渲染留几帧收敛（RTX 时序降噪需要多帧），否则截到的图会偏亮。
     dome_light = AssetBaseCfg(
         prim_path="/World/Light",
-        # bright neutral dome light: RTX path tracing eats intensity fast, and a
-        # dim scene reads as "grey" (robot is dark-grey, parcel light-brown).
-        spawn=sim_utils.DomeLightCfg(intensity=1200.0, color=(1.0, 1.0, 1.0)),
+        # 环境光（填充光）：调暗一些可提高明暗对比、让阴影更明显；太亮会把画面整体冲白。
+        spawn=sim_utils.DomeLightCfg(intensity=40.0, color=(1.0, 0.99, 0.97)),  # 微暖的环境光（F 档）
+    )
+    key_light = AssetBaseCfg(
+        prim_path="/World/KeyLight",
+        spawn=sim_utils.DistantLightCfg(intensity=300.0, color=(1.0, 0.98, 0.94), angle=12.0),  # 主光（F 档）
+        # 方向光沿自身 -Z 发射；默认朝下。绕 X 轴倾斜一点 -> 光从前方斜上方来，
+        # 让盒子/桌面产生方向性阴影（旋转由四元数给出）。
+        init_state=AssetBaseCfg.InitialStateCfg(rot=(0.3007, 0.0, 0.0, 0.9537)),  # ≈ 绕 X 转 35°
+    )
+    fill_light = AssetBaseCfg(
+        prim_path="/World/FillLight",
+        spawn=sim_utils.DistantLightCfg(intensity=320.0, color=(0.97, 0.98, 1.0), angle=25.0),
+        # 另一侧补光，减轻背光面过暗
+        init_state=AssetBaseCfg.InitialStateCfg(rot=(-0.2164, -0.2164, -0.0475, 0.9511)),
     )
 
     # 相机占位字段（与 openarm_sorting demo 场景同款安装）：enable_cameras=True 时
@@ -375,8 +451,22 @@ class OpenArmFlipSceneCfg(InteractiveSceneCfg):
 
 @configclass
 class StateObservationsCfg:
-    """Full-state observations (policy group only) — used by the fast
-    state-only task ``OpenArm-Flip-State-v0``."""
+    """状态观测（**默认 62 维**）：不含盒子的线速度/角速度。
+
+    排布::
+
+        0-17  joint_pos(18) | 18-35 joint_vel(18) | 36-38 parcel_pos(3)
+       39-42  parcel_quat(4) | 43-45 label_normal(3) | 46-61 last_action(16)
+
+    为什么去掉盒子速度（6 维）：真机上盒子速度是最难获得的量（需要多帧差分 +
+    滤波，噪声大且带延迟）。消融实验（``scripts/vel_ablation.py``）显示：把
+    盒子速度置零，成功率从 93.4% 只掉到 89.8%（−3.5pp），而加 30% 噪声几乎无
+    影响（−0.4pp）——即策略对速度的精度要求极低，属于"锦上添花"而非"必需"。
+    去掉后感知系统只需输出"位置 + 姿态"，单帧 CNN 即可，部署大幅简化。
+
+    注意：关节速度 18 维**不能去**（消融显示掉 14.1pp），但它恰好是真机上最
+    容易获得的量（编码器差分/驱动器直接提供）。
+    """
 
     @configclass
     class PolicyCfg(ObsGroup):
@@ -395,7 +485,57 @@ class StateObservationsCfg:
             noise=Unoise(n_min=-0.1, n_max=0.1),
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=CONTROLLED_JOINTS)},
         )
-        # 盒子本体状态（env-local 世界系）：位置 / 姿态 / 线速度 / 角速度，让策略感知盒子当前位姿
+        # 盒子位姿（env-local 世界系）：位置 + 姿态 —— 真机靠视觉/标记估计
+        parcel_pos = ObsTerm(func=mdp_observations.root_pos_w, params={"asset_cfg": SceneEntityCfg("parcel")})
+        parcel_quat = ObsTerm(
+            func=mdp_observations.root_quat_w,
+            params={"asset_cfg": SceneEntityCfg("parcel"), "make_quat_unique": False},
+        )
+        # 标签面（盒子局部 +Z）法向的世界系分量 —— 任务的目标量（朝上 = (0, 0, 1)）
+        label_normal = ObsTerm(func=mdp.parcel_label_normal_w, params={"asset_cfg": SceneEntityCfg("parcel")})
+        # 上一步动作（16 维）：给策略"动作平滑 / 惯性"先验
+        last_action = ObsTerm(func=mdp_observations.last_action, params={"action_name": "joint_pos"})
+
+        def __post_init__(self):
+            self.concatenate_terms = True
+
+    policy: PolicyCfg = PolicyCfg()
+
+
+@configclass
+class StateObservationsFullCfg:
+    """状态观测（**68 维，兼容旧 checkpoint**）：额外含盒子线速度/角速度。
+
+    排布::
+
+        0-17  joint_pos(18) | 18-35 joint_vel(18) | 36-38 parcel_pos(3)
+       39-42  parcel_quat(4) | 43-45 parcel_lin_vel(3) | 46-48 parcel_ang_vel(3)
+       49-51  label_normal(3) | 52-67 last_action(16)
+
+    2026-09 之前训练的所有 checkpoint（含 09-16 那版 93% 的 model_20000）都用
+    这个排布。要播放/续训那些旧模型时，把 ``OpenArmFlipEnvCfg.use_parcel_vel``
+    设为 True 即可（``play.py`` / ``eval_model.py`` / ``train.py`` 会依据
+    checkpoint 的输入维度自动判定，无需手动设置）。
+
+    字段顺序必须与旧 checkpoint 完全一致（不能靠继承追加，否则拼接顺序变化
+    会让旧权重对错位置）。
+    """
+
+    @configclass
+    class PolicyCfg(ObsGroup):
+        """Observations for the policy (68-dim, legacy order)."""
+
+        joint_pos = ObsTerm(
+            func=mdp_observations.joint_pos_limit_normalized,
+            noise=Unoise(n_min=-0.02, n_max=0.02),
+            params={"asset_cfg": SceneEntityCfg("robot", joint_names=CONTROLLED_JOINTS)},
+        )
+        joint_vel = ObsTerm(
+            func=mdp_observations.joint_vel,
+            scale=0.1,
+            noise=Unoise(n_min=-0.1, n_max=0.1),
+            params={"asset_cfg": SceneEntityCfg("robot", joint_names=CONTROLLED_JOINTS)},
+        )
         parcel_pos = ObsTerm(func=mdp_observations.root_pos_w, params={"asset_cfg": SceneEntityCfg("parcel")})
         parcel_quat = ObsTerm(
             func=mdp_observations.root_quat_w,
@@ -407,9 +547,7 @@ class StateObservationsCfg:
         parcel_ang_vel = ObsTerm(
             func=mdp_observations.root_ang_vel_w, scale=0.2, params={"asset_cfg": SceneEntityCfg("parcel")}
         )
-        # 标签面（盒子局部 +Z）法向的世界系分量 —— 任务的目标量（朝上 = (0, 0, 1)）
         label_normal = ObsTerm(func=mdp.parcel_label_normal_w, params={"asset_cfg": SceneEntityCfg("parcel")})
-        # 上一步动作（16 维）：给策略"动作平滑 / 惯性"先验
         last_action = ObsTerm(func=mdp_observations.last_action, params={"action_name": "joint_pos"})
 
         def __post_init__(self):
@@ -677,6 +815,76 @@ class EventCfg:
         },
     )
 
+    # --- 场景表面纹理（startup 一次）---
+    # 给盒子/标签/桌面/地面贴上程序化纹理（tools/make_textures.py 生成，随仓库分发）。
+    # 材质建立在 /World/Looks 下全局共享；几何体的 UV 由资产自己提供
+    # （assets/parcel/parcel.usda 里 author 了 primvars:st；否则纹理采样会失败 → 渲染成灰白）。
+    apply_textures = EventTerm(
+        func=mdp.apply_scene_textures,
+        mode="startup",
+        params={
+            "material_bindings": [
+                # 快递盒：**用纯色**（assets/parcel/parcel.usda 里的 primvars:displayColor），
+                # 不绑纹理 —— 纸箱纹理试过几轮，观感反而更假（且容易做出木纹感）。
+                # 想换回纹理时，把下面这段加回 material_bindings 即可（纹理可用
+                # `python3 tools/make_textures.py` 重新生成 cardboard.png）：
+                #   {"looks_name": "CardboardMat", "texture": "cardboard",
+                #    "targets": ["{ENV_REGEX_NS}/Parcel/Body"],
+                #    "roughness": 0.85, "metallic": 0.0, "uv_scale": (1.0, 1.0)},
+                {
+                    "looks_name": "LabelMat",
+                    "texture": "express_label",
+                    "targets": ["{ENV_REGEX_NS}/Parcel/Label"],
+                    "roughness": 0.35,  # 面单是印刷纸，比瓦楞纸略光
+                    "metallic": 0.0,
+                    "uv_scale": (1.0, 1.0),
+                },
+                {
+                    "looks_name": "TableMat",
+                    "texture": "table",
+                    "targets": ["{ENV_REGEX_NS}/Table"],
+                    "roughness": 0.9,  # 哑光台面：高粗糙度才不会有明显高光反射
+                    "metallic": 0.0,
+                    "uv_scale": (6.0, 6.0),
+                },
+                {
+                    # 注意：GroundPlane 资产真正的可见几何是
+                    # /World/GroundPlane/Environment/Geometry（自带上网格线材质），
+                    # 直接绑到 /World/GroundPlane 只会作用到外层 Xform 与碰撞平面，
+                    # 地面仍显示 Isaac 默认的蓝青色网格 —— 必须指向这个具体几何。
+                    "looks_name": "FloorMat",
+                    "texture": "floor",
+                    "targets": ["/World/GroundPlane/Environment/Geometry"],
+                    "roughness": 0.9,
+                    "metallic": 0.0,
+                    "uv_scale": (12.0, 12.0),
+                },
+            ]
+        },
+    )
+
+    # --- 腕部相机位姿同步（每个策略步一次） ---
+    # 为什么必须手动同步：Isaac Lab 在 fabric 模式下不回写 link 的 USD 变换，挂在
+    # link 下的相机 prim 生成后位姿即被冻结（实测：机械臂移动 4.4 cm、相机位移
+    # 0.00 cm），图像全黑。这里每步用 link 的**物理**位姿直接设置相机世界位姿
+    # （见 mdp.events.sync_wrist_cameras）。
+    # interval_range_s=(0,0) + is_global_time=True -> 每步触发、对所有环境一次性更新。
+    sync_wrist_cameras = EventTerm(
+        func=mdp.sync_wrist_cameras,
+        mode="interval",
+        interval_range_s=(0.0, 0.0),
+        is_global_time=True,
+        params={
+            "robot_cfg": SceneEntityCfg("robot"),
+            "camera_bindings": {
+                "wrist_left_cam": "openarm_left_link7",
+                "wrist_right_cam": "openarm_right_link7",
+            },
+            "local_offset": WRIST_CAM_LOCAL,  # 局部 +X 15 cm（夹爪侧上方）
+            "look_at_forward": WRIST_CAM_LOOKAT_FORWARD,  # 注视 link7 工具轴前方 13 cm（指尖处）
+        },
+    )
+
 
 # -----------------------------------------------------------------------------
 # Env
@@ -702,10 +910,41 @@ class OpenArmFlipEnvCfg(ManagerBasedRLEnvCfg):
     每个末端执行器一个"眼在手"相机。渲染相机视图有开销——纯状态快速训练请传
     ``--disable_cameras``（见 scripts/train.py）。
     """
+    lean_cameras: bool = False
+    """裁剪相机配置以加速**视觉策略训练**（默认 False，保持原行为）。
+
+    开启后：
+    * 只创建**前视相机**（策略唯一使用的相机），不创建左右腕部相机；
+    * 前视相机只渲染 ``rgb``，渲染 ``depth``（``distance_to_image_plane``）。
+
+    实测吞吐（``scripts/bench_vision.py``，视觉任务 ``OpenArm-Flip-v0``）：
+
+    ==========  ==================  ==============
+    num_envs    当前配置             lean（提速）
+    ==========  ==================  ==============
+    64          204 env-steps/s     495（2.4×）
+    256         —                   1696
+    512         —                   2790
+    ==========  ==================  ==============
+
+    对 20000 次 PPO 迭代的推算：512 envs + lean ≈ **24.5 小时**
+    （对比状态任务同规模约 14 小时，约 1.7 倍）。用 ``train.py --lean_cameras`` 开启。
+    """
     enable_contact_rewards: bool = True
     """生成盒子/手指接触传感器并启用一次性 touch/grasp 阶段奖励
     （见 mdp.rewards.parcel_contact_stage_bonus）。"""
-    observations: StateObservationsCfg | ImageObservationsCfg = StateObservationsCfg()
+    use_parcel_vel: bool = False
+    """状态观测是否包含盒子的线速度/角速度。
+
+    * ``False``（默认）：62 维观测（``StateObservationsCfg``）——为 sim-to-real
+      设计，真机只需估计盒子位置+姿态（单帧视觉即可），不必求速度。
+    * ``True``：68 维观测（``StateObservationsFullCfg``）——与 2026-09 之前
+      训练的旧 checkpoint 兼容（如 09-16 的 93% 模型）。
+
+    ``play.py`` / ``eval_model.py`` / ``eval_breakdown.py`` / ``train.py`` 会读取
+    checkpoint 的输入维度自动设置本开关，一般无需手动改。
+    """
+    observations: StateObservationsCfg | StateObservationsFullCfg | ImageObservationsCfg = StateObservationsCfg()
     actions: ActionsCfg = ActionsCfg()
     rewards: RewardsCfg = RewardsCfg()
     terminations: TerminationsCfg = TerminationsCfg()
@@ -734,7 +973,11 @@ class OpenArmFlipEnvCfg(ManagerBasedRLEnvCfg):
         if self.enable_image_obs:
             self.enable_cameras = True  # 图像观测必须有相机
             self.observations = ImageObservationsCfg()
+        elif self.use_parcel_vel:
+            # 68 维：含盒子速度，兼容 2026-09 之前的旧 checkpoint
+            self.observations = StateObservationsFullCfg()
         else:
+            # 62 维（默认）：不含盒子速度，便于真机部署（只需位置+姿态感知）
             self.observations = StateObservationsCfg()
         if self.enable_cameras:
             self._setup_cameras()
@@ -753,27 +996,48 @@ class OpenArmFlipEnvCfg(ManagerBasedRLEnvCfg):
 
     def _setup_cameras(self) -> None:
         """Create the front + wrist cameras (same mounts as the demo scene)."""
-        cam_spawn = sim_utils.PinholeCameraCfg(
-            focal_length=24.0,
+        # 腕部相机：24 mm 长焦，只看 15 cm 外的指尖/夹爪，不需要广角
+        wrist_cam_spawn = sim_utils.PinholeCameraCfg(
+            focal_length=WRIST_CAM_FOCAL,
+            focus_distance=400.0,
+            horizontal_aperture=20.955,
+            clipping_range=(0.05, 5.0),
+        )
+        # 前视相机：12 mm 广角（水平视场 ~82°），保证翻转全过程盒子都在画面内
+        front_cam_spawn = sim_utils.PinholeCameraCfg(
+            focal_length=FRONT_CAM_FOCAL,
             focus_distance=400.0,
             horizontal_aperture=20.955,
             clipping_range=(0.05, 5.0),
         )
         # 机器人正前方的固定相机，斜向下看桌上的盒子；
         # 若它还喂给策略图像观测（enable_image_obs），就用低分辨率以省渲染+CNN 开销
-        cam_w, cam_h = (POLICY_CAM_WIDTH, POLICY_CAM_HEIGHT) if self.enable_image_obs else (CAM_WIDTH, CAM_HEIGHT)
+        # （视场由焦距决定，与分辨率无关 —— 降分辨率只降像素密度，不缩视野）
+        cam_w, cam_h = (
+            (POLICY_CAM_WIDTH, POLICY_CAM_HEIGHT)
+            if self.enable_image_obs
+            else (FRONT_CAM_WIDTH, FRONT_CAM_HEIGHT)
+        )
+        # lean_cameras：只建策略真正需要的相机与数据类型 —— 视觉 RL 训练必用。
+        # 实测（scripts/bench_vision.py，64 envs）：204 -> 495 env-steps/s（2.4 倍提速）。
+        # 原因：腕部相机（2×320×240）与 depth 都不喂给策略，却每步都在渲染。
+        front_data_types = ["rgb"] if self.lean_cameras else CAM_DATA_TYPES
         self.scene.front_cam = CameraCfg(
             prim_path="{ENV_REGEX_NS}/FrontCamera",
             update_period=0.0,
             height=cam_h,
             width=cam_w,
-            data_types=CAM_DATA_TYPES,
-            spawn=cam_spawn,
+            data_types=front_data_types,
+            spawn=front_cam_spawn,
             offset=CameraCfg.OffsetCfg(
                 pos=FRONT_CAM_POS, rot=FRONT_CAM_ROT_XYZW, convention="opengl"
             ),
         )
-        # 眼在手：挂在每侧末端工具 link(link7) 下方 6 cm，沿工具轴(-Z)看向指尖/盒子
+        if self.lean_cameras:
+            return  # 腕部相机不参与策略观测，训练时直接不创建
+        # 眼在手：装在 link7 局部 +X 15 cm（见 WRIST_CAM_LOCAL 注释），俯视指尖/盒子。
+        # 注意：实测这两台相机当前**看不到盒子**（视野被夹爪占据，盒子在相机后方），
+        # 采集数据集时不要指望它们；要么调 WRIST_CAM_LOOKAT_FORWARD/安装位，要么只用前视。
         for side, name in (("left", "wrist_left_cam"), ("right", "wrist_right_cam")):
             setattr(
                 self.scene,
@@ -784,7 +1048,7 @@ class OpenArmFlipEnvCfg(ManagerBasedRLEnvCfg):
                     height=CAM_HEIGHT,
                     width=CAM_WIDTH,
                     data_types=CAM_DATA_TYPES,
-                    spawn=cam_spawn,
+                    spawn=wrist_cam_spawn,
                     offset=CameraCfg.OffsetCfg(pos=WRIST_CAM_LOCAL, rot=(0.0, 0.0, 0.0, 1.0), convention="ros"),
                 ),
             )

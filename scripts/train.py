@@ -59,6 +59,12 @@ parser.add_argument(
     "runs without cameras; the visual task OpenArm-Flip-v0 needs its front camera "
     "for the image observation (this flag is ignored there).",
 )
+parser.add_argument(
+    "--lean_cameras",
+    action="store_true",
+    help="视觉任务专用：只保留策略使用的前视相机与 rgb（去掉左右腕部相机和 depth）。"
+    "实测提速 2.4 倍（204 -> 495 env-steps/s @64 envs），视觉 RL 训练建议开启。",
+)
 args, _ = parser.parse_known_args()
 
 # 视觉任务把前视相机图像喂给 CNN 策略，因此必须离屏 RTX 渲染；
@@ -95,7 +101,19 @@ def main() -> None:
     # --- 1) 解析任务：从 gym spec 拿到注册时绑定的 env/agent cfg 类并实例化 ---
     spec = gym.spec(args.task)
     # cfg 类本身已编码相机决策（视觉任务强制开前视相机；状态任务默认无相机）
-    env_cfg = string_to_callable(spec.kwargs["env_cfg_entry_point"])()
+    # 续训时按 checkpoint 的观测维度选择 62/68 维观测（构造时传入才生效）；
+    # 从零训练则用默认 62 维（不含盒子速度，便于真机部署）
+    from openarm_lab.openarm_flip.checkpoint_utils import make_env_cfg
+
+    # lean_cameras 必须在构造时传入：相机是在 __post_init__ 里创建的，
+    # 事后改标志不会生效（与 use_parcel_vel 同理）
+    env_cfg = make_env_cfg(
+        string_to_callable(spec.kwargs["env_cfg_entry_point"]),
+        args.checkpoint,
+        lean_cameras=args.lean_cameras,
+    )
+    if args.lean_cameras:
+        print("[INFO] --lean_cameras: 只保留前视相机与 rgb（去掉腕部相机/depth）", flush=True)
     agent_cfg = string_to_callable(spec.kwargs["rsl_rl_cfg_entry_point"])()
     # --- 2) 兼容清理：去掉本机安装的 rsl-rl 版本中已弃用的模型字段 ---
     import importlib.metadata as metadata

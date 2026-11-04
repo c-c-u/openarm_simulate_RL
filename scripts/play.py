@@ -37,7 +37,15 @@ import argparse
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description="Play a trained OpenArm parcel-flip policy (RSL-RL).")
-parser.add_argument("--task", type=str, default="OpenArm-Flip-Play-v0", help="Gym task id.")
+parser.add_argument(
+    "--task",
+    type=str,
+    default=None,
+    help="Gym task id. Leave unset to infer it from the checkpoint path "
+    "(logs/rsl_rl/openarm_flip/... = state MLP -> OpenArm-Flip-State-v0; "
+    "logs/rsl_rl/openarm_flip_img/... = vision CNN -> OpenArm-Flip-Play-v0). "
+    "Passing the wrong task makes rsl-rl reject the checkpoint with a state_dict size mismatch.",
+)
 parser.add_argument("--checkpoint", type=str, required=True, help="Path to a model_*.pt checkpoint.")
 parser.add_argument("--num_envs", type=int, default=8, help="Number of environments.")
 parser.add_argument("--device", type=str, default="cuda:0", help="Simulation device (cpu or cuda:N).")
@@ -76,10 +84,60 @@ from isaaclab.utils.string import string_to_callable
 from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper
 
 
+_STATE_TASK = "OpenArm-Flip-State-v0"
+_VISION_TASK = "OpenArm-Flip-Play-v0"
+
+
+def resolve_task(checkpoint: str, task: str | None) -> str:
+    """决定用哪个 gym 任务加载 checkpoint。
+
+    显式传入 ``--task`` 时直接采用；否则从 checkpoint 路径里的实验目录名反推
+    （``logs/rsl_rl/<experiment>/<run>/model_*.pt``）：状态 MLP 模型与视觉 CNN
+    模型的网络结构不同，用错任务 rsl-rl 会报 state_dict shape 不匹配。
+    """
+    if task is not None:
+        return task
+    from openarm_lab.openarm_flip import EXPERIMENT_TASKS
+
+    parts = pathlib.Path(checkpoint).resolve().parts
+    for part in reversed(parts):
+        if part in EXPERIMENT_TASKS:
+            inferred = EXPERIMENT_TASKS[part]
+            print(f"[PLAY] inferred task '{inferred}' from checkpoint path ('{part}/')", flush=True)
+            return inferred
+    # 回退：按文件名/路径子串判断（支持 models/ 下的重命名模型，如
+    # openarm_flip_state62_best.pt）
+    joined = "/".join(p.lower() for p in pathlib.Path(checkpoint).resolve().parts)
+    name = pathlib.Path(checkpoint).name.lower()
+    if "openarm_flip_img" in joined or "vision" in name or "cnn" in name:
+        print("[PLAY] inferred task from filename -> vision task", flush=True)
+        return _VISION_TASK
+    if "openarm_flip" in joined or "state62" in name or "state68" in name:
+        print("[PLAY] inferred task from filename -> state task", flush=True)
+        return _STATE_TASK
+    # 无法推断（checkpoint 不在 logs/rsl_rl 下）：回退到视觉播放任务
+    fallback = "OpenArm-Flip-Play-v0"
+    print(
+        f"[PLAY] cannot infer task from '{checkpoint}'; falling back to '{fallback}'. "
+        f"Pass --task explicitly if the checkpoint is a state (MLP) model.",
+        flush=True,
+    )
+    return fallback
+
+
 def main() -> None:
+    # --- 0) 解析任务 id：未显式指定时按 checkpoint 路径自动推断 ---
+    task = resolve_task(args.checkpoint, args.task)
+
     # --- 1) 解析任务：从 gym spec 拿到注册时绑定的 env/agent cfg 类并实例化 ---
-    spec = gym.spec(args.task)
-    env_cfg = string_to_callable(spec.kwargs["env_cfg_entry_point"])()
+    spec = gym.spec(task)
+    # 按 checkpoint 的观测维度选择 62/68 维观测——必须在**构造时**传入，
+    # 因为 __post_init__ 在实例化时就决定了观测组
+    from openarm_lab.openarm_flip.checkpoint_utils import make_env_cfg
+
+    env_cfg = make_env_cfg(
+        string_to_callable(spec.kwargs["env_cfg_entry_point"]), args.checkpoint
+    )
     agent_cfg = string_to_callable(spec.kwargs["rsl_rl_cfg_entry_point"])()
     # --- 2) 兼容清理：去掉本机安装的 rsl-rl 版本已弃用的模型字段 ---
     import importlib.metadata as metadata
@@ -93,7 +151,7 @@ def main() -> None:
     env_cfg.seed = args.seed
 
     # --- 3) 创建环境并包上 rsl-rl 向量化包装 ---
-    env = gym.make(args.task, cfg=env_cfg)
+    env = gym.make(task, cfg=env_cfg)
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
     # --- 4) （可选）GUI 相机预设：把 Kit 视口对准 env0 的盒子（无头或未指定则跳过） ---

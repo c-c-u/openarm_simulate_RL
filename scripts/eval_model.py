@@ -25,8 +25,10 @@ import argparse
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--task", type=str, default="OpenArm-Flip-v0",
-                    help="Gym task id (OpenArm-Flip-v0 = visual/CNN; OpenArm-Flip-State-v0 = state-only/MLP).")
+parser.add_argument("--task", type=str, default=None,
+                    help="Gym task id (OpenArm-Flip-v0 = visual/CNN; OpenArm-Flip-State-v0 = state-only/MLP). "
+                         "Leave unset to infer it from the checkpoint path — the policy structure must match "
+                         "the task, otherwise rsl-rl raises a state_dict size mismatch.")
 parser.add_argument("--checkpoint", type=str, required=True)
 parser.add_argument("--num_envs", type=int, default=64)
 parser.add_argument("--episodes", type=int, default=10, help="episodes per env")
@@ -35,10 +37,47 @@ parser.add_argument("--headless", action="store_true", default=True)
 parser.add_argument("--cameras", action="store_true", help="Enable scene cameras (default off: state-only eval).")
 args = parser.parse_known_args()[0]
 
+# 训练日志目录名 -> 该目录下 checkpoint 对应的任务 id。
+# 与 openarm_lab.openarm_flip.EXPERIMENT_TASKS 一致；这里复制一份是为了在启动
+# Isaac Sim（AppLauncher）之前就能推断任务、决定是否需要开相机，不依赖 isaaclab 导入。
+_STATE_TASK = "OpenArm-Flip-State-v0"
+_VISION_TASK = "OpenArm-Flip-Play-v0"
+
+_EXPERIMENT_TASKS = {
+    "openarm_flip": "OpenArm-Flip-State-v0",  # MLP 状态模型
+    "openarm_flip_img": "OpenArm-Flip-v0",  # CNN 视觉模型
+}
+
+
+def _resolve_task(checkpoint: str, task: str | None) -> str:
+    """未显式指定 --task 时，按 checkpoint 路径推断任务（策略结构必须匹配）。"""
+    if task is not None:
+        return task
+    for part in reversed(pathlib.Path(checkpoint).resolve().parts):
+        if part in _EXPERIMENT_TASKS:
+            inferred = _EXPERIMENT_TASKS[part]
+            print(f"[EVAL] inferred task '{inferred}' from checkpoint path ('{part}/')", flush=True)
+            return inferred
+    # 回退：按文件名/路径子串判断（支持 models/ 下的重命名模型，
+    # 例如 models/openarm_flip_state62_best.pt）
+    joined = "/".join(p.lower() for p in pathlib.Path(checkpoint).resolve().parts)
+    name = pathlib.Path(checkpoint).name.lower()
+    if "openarm_flip_img" in joined or "vision" in name or "cnn" in name:
+        print("[EVAL] inferred task from filename -> vision task", flush=True)
+        return _VISION_TASK
+    if "openarm_flip" in joined or "state62" in name or "state68" in name:
+        print("[EVAL] inferred task from filename -> state task", flush=True)
+        return _STATE_TASK
+    print(f"[EVAL] cannot infer task from '{checkpoint}'; falling back to 'OpenArm-Flip-v0'", flush=True)
+    return "OpenArm-Flip-v0"
+
+
+task = _resolve_task(args.checkpoint, args.task)
+
 # 视觉任务把前视相机图像喂给 CNN 策略，因此必须离屏 RTX 渲染；
 # --cameras 只对纯状态任务有意义（默认关）。
 _IMAGE_TASKS = {"OpenArm-Flip-v0", "OpenArm-Flip-Play-v0"}
-_NEEDS_CAMERAS = args.task in _IMAGE_TASKS or args.cameras
+_NEEDS_CAMERAS = task in _IMAGE_TASKS or args.cameras
 
 app_launcher = AppLauncher({"headless": True, "width": 320, "height": 240, "enable_cameras": _NEEDS_CAMERAS})
 simulation_app = app_launcher.app
@@ -73,8 +112,15 @@ def main() -> None:
     import importlib.metadata as metadata
 
     # --- 1) 解析任务注册的 env/agent cfg 并实例化（相机按 _NEEDS_CAMERAS 决定） ---
-    spec = gym.spec(args.task)
-    env_cfg = string_to_callable(spec.kwargs["env_cfg_entry_point"])(enable_cameras=_NEEDS_CAMERAS)
+    spec = gym.spec(task)
+    # 按 checkpoint 的观测维度选择 62/68 维观测（构造时传入才生效）
+    from openarm_lab.openarm_flip.checkpoint_utils import make_env_cfg
+
+    env_cfg = make_env_cfg(
+        string_to_callable(spec.kwargs["env_cfg_entry_point"]),
+        args.checkpoint,
+        enable_cameras=_NEEDS_CAMERAS,
+    )
     agent_cfg = string_to_callable(spec.kwargs["rsl_rl_cfg_entry_point"])()
     agent_cfg = handle_deprecated_rsl_rl_cfg(agent_cfg, str(metadata.version("rsl-rl-lib")))
     env_cfg.scene.num_envs = args.num_envs
@@ -83,7 +129,7 @@ def main() -> None:
     env_cfg.episode_length_s = 12.0
 
     # --- 2) 创建环境 + rsl-rl 向量化包装，加载 checkpoint 取推理策略 ---
-    env = gym.make(args.task, cfg=env_cfg)
+    env = gym.make(task, cfg=env_cfg)
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
     runner = OnPolicyRunner(env, agent_cfg.to_dict(), device=agent_cfg.device)
     print(f"loading {args.checkpoint}")

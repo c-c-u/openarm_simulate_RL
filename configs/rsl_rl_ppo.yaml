@@ -17,18 +17,29 @@ empirical_normalization: false
 obs_groups:
   actor: [policy]
   critic: [policy]
+# 注意：不要设 clip_actions —— 策略输出是关节位置目标（经动作层 scale 与关节
+# 限位消化）；曾试 clip_actions=1.0，会把无裁剪训练的旧 checkpoint 的大幅动作
+# 压到 ±1，播放时机械臂几乎不动（详见 rsl_rl_ppo_cfg.py 的注释）。
 
 # --- policy (MLP) ---
 policy:
   hidden_dims: [256, 128, 64]
   activation: elu
+  # 有界 std 高斯分布（见 rsl_rl_ppo_cfg.py 的 OpenArmFlipGaussianDistribution）：
+  # init 1.0、std 恒定钳制在 [0.2, 2.0] —— 上限防止 2026-09-06 那种 std 涨到
+  # ~20 的爆炸，下界保证探索地板；注意上界不能压太低（曾用 (0.1, 0.8)，
+  # 探索幅度不足以发现大幅甩臂动作，导致 20000 轮完全学不会）。
   init_noise_std: 1.0
+  noise_std_range: [0.2, 2.0]
 
 # --- PPO algorithm ---
 algorithm:
   value_loss_coef: 1.0
   use_clipped_value_loss: true
   clip_param: 0.2
+  # 熵系数 0.005、学习率 1e-3 adaptive：沿用 2026-09-06 那次训练的取值。
+  # 2026-09-10 的训练曾降到 0.001 / 3e-4(fixed)，结果探索被压死
+  # （mean_std 从 0.3 坍缩到 0.15、20000 轮 success_bonus 从未触发），故已恢复。
   entropy_coef: 0.005
   num_learning_epochs: 5
   num_mini_batches: 4

@@ -13,7 +13,7 @@ ISAAC_ROOT=/home/blanc/isaacsim/isaac-sim-standalone-6.0.1-linux-x86_64
 >
 > * **`OpenArm-Flip-v0`（默认，视觉任务）**：策略输入 = **18 个归一化关节位置 + 前视相机 RGB 图像**
 >   （CNN 策略，图像 96×72）。**必须开相机**，`--disable_cameras` 对它无效。
-> * **`OpenArm-Flip-State-v0`（纯状态任务，跑得快 ~30 倍）**：68 维状态（关节+盒子+标签朝向），
+> * **`OpenArm-Flip-State-v0`（纯状态任务，跑得快 ~30 倍）**：62 维状态（关节+盒子位姿+标签朝向，默认；旧模型为 68 维，自动识别），
 >   MLP 策略，无相机，可用 `--disable_cameras`。
 >
 > 场景里仍带 3 个相机（前视 1 + 左右腕部 2，眼在手）供观察/调试：
@@ -34,7 +34,7 @@ $ISAAC_ROOT/python.sh scripts/train.py --task OpenArm-Flip-v0 \
 
 ```bash
 $ISAAC_ROOT/python.sh scripts/train.py --task OpenArm-Flip-State-v0 \
-    --num_envs 1024 --device cuda:0 --headless --disable_cameras
+    --num_envs 768 --device cuda:0 --headless --disable_cameras
 ```
 
 - 日志目录：`logs/rsl_rl/openarm_flip/<时间戳>/`
@@ -89,13 +89,45 @@ tensorboard --logdir /home/blanc/isaacsim/openarm_lab/logs/rsl_rl
 
 ## 6. 播放训练好的模型（看实际动作）
 
-视觉任务（默认用 `OpenArm-Flip-Play-v0`，16 envs、更稳的随机化）：
+**自动播放最新一次训练的 checkpoint**（免翻 logs 目录；自动定位并推断任务）：
 
 ```bash
-$ISAAC_ROOT/python.sh scripts/play.py \
-    --checkpoint logs/rsl_rl/openarm_flip_img/<时间戳目录>/model_19999.pt \
-    --num_envs 4
+# GUI 播放最新 checkpoint（默认用环境初始视角，不加 --cam）
+$ISAAC_ROOT/python.sh scripts/play_latest.py --num_envs 4
+
+# 想看盒子正上方的标签俯视图再加 --cam top
+$ISAAC_ROOT/python.sh scripts/play_latest.py --cam top --num_envs 4
+
+# 只看它定位到了什么（不启动仿真）
+$ISAAC_ROOT/python.sh scripts/play_latest.py --list
+
+# 只播某个实验的最新（openarm_flip=状态MLP / openarm_flip_img=视觉CNN）
+$ISAAC_ROOT/python.sh scripts/play_latest.py --experiment openarm_flip_img --cam top
 ```
+
+> `scripts/play_latest.py` 是 `scripts/play.py` 的薄包装：扫描
+> `logs/rsl_rl/<experiment>/<时间戳>/model_*.pt` 取 mtime 最新者，并按目录自动
+> 匹配任务——`openarm_flip` → `OpenArm-Flip-State-v0`（MLP 状态模型）、
+> `openarm_flip_img` → `OpenArm-Flip-Play-v0`（CNN 视觉模型）。其余参数透传。
+
+**手动指定 checkpoint 播放**（`--task` 可省略：会按 checkpoint 路径自动推断）：
+
+```bash
+# 状态 MLP 模型：放错任务会因网络结构不匹配而报 state_dict size mismatch
+$ISAAC_ROOT/python.sh scripts/play.py \
+    --checkpoint logs/rsl_rl/openarm_flip/<时间戳目录>/model_17000.pt --num_envs 4
+
+# 视觉 CNN 模型（同理，路径含 openarm_flip_img 会自动选 OpenArm-Flip-Play-v0）
+$ISAAC_ROOT/python.sh scripts/play.py \
+    --checkpoint logs/rsl_rl/openarm_flip_img/<时间戳目录>/model_19999.pt --num_envs 4
+```
+
+> `scripts/play.py` 不指定 `--task` 时会从 checkpoint 的父目录名推断任务
+> （`openarm_flip/` → `OpenArm-Flip-State-v0`；`openarm_flip_img/` →
+> `OpenArm-Flip-Play-v0`），推断规则见任务包的 `EXPERIMENT_TASKS`。也可以显式
+> `--task` 覆盖，但**必须与该 checkpoint 的策略结构一致**——用视觉任务加载
+> MLP checkpoint（或反之）会报
+> `Error(s) in loading state_dict ... size mismatch`。
 
 - 加 `--headless` 则只输出统计不弹窗
 - 评估成功率（无 GUI，统计输出）：
