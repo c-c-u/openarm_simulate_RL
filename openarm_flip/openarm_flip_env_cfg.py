@@ -270,7 +270,13 @@ def _urdf_spawn_cfg() -> sim_utils.UrdfFileCfg:
         joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
             drive_type="force",
             target_type="position",
-            gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=2000.0, damping=100.0),
+            # 真机 kp/kd（按关节给定，见 REAL_ARM_JOINT_DRIVE / REAL_FINGER_DRIVE）。
+            # 这里只是导入时"烘焙"进 USD 的初值：运行期真正生效的是
+            # ArticulationCfg.actuators（它还带力矩/速度上限，本处无法表达）。
+            gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(
+                stiffness=_merged_drive("stiffness"),
+                damping=_merged_drive("damping"),
+            ),
         ),
     )
 
@@ -324,6 +330,103 @@ CONTROLLED_JOINTS = [
     "openarm_right_finger_joint[1-2]",
 ]
 
+# -----------------------------------------------------------------------------
+# 执行器 / 关节驱动参数 —— **真机参数**（OpenArm v1.0，达妙 DM8009/DM4340/DM4310）
+# -----------------------------------------------------------------------------
+# 2026-10（sim-to-real）：这里原来是"隐式 PD 刚度 2000 N·m/rad、阻尼 100，力矩与
+# 速度都不设限"。那等于把真机 30~200 倍柔、且明显有力矩/速度上限的关节建模成近乎
+# 刚性伺服，策略因此学会"把目标推到关节限位之外、靠限位饱和来甩臂"（实测 checkpoint
+# 的 `last_action` 统计 σ≈4~6，即原始动作常年 ±5 以上）。换成下表参数后动力学变了，
+# **旧 checkpoint 不能直接续训/播放，需要重训**。
+#
+# 数值来源（真机侧一手文件，均在 openarm_ws/src/openarm_description 下）：
+#   * kp / kd：`assets/robot/openarm_v1.0/config/arm/control_gains.yaml`
+#   * 力矩 / 速度上限：`assets/robot/openarm_v1.0/config/arm/joint_limits.yaml`
+#     （关节侧数值，已折算减速比；左右臂同值）
+#   * 夹爪不在这两个文件里，按电机额定值 + 传动比换算，见 REAL_FINGER_DRIVE 注释
+#
+# ⚠️ 关于 ImplicitActuator 的两套"上限"（Isaac Lab 3.0 语义，别混淆）：
+#   * `joint_effort_limit` / `joint_velocity_limit` —— **求解器级**硬钳位，是物理上
+#     真正生效的力矩/速度上限；
+#   * `actuator_effort_limit` / `actuator_velocity_limit` —— 电机额定值，只用于填充
+#     soft limits（终止项/奖励项读它）与遥测，本身不钳位。
+# 为了让仿真真的"发力/提速受限"，两者都设成同一个真机值。
+REAL_ARM_JOINT_DRIVE = {
+    # 关节后缀: (kp [N·m/rad], kd [N·m·s/rad], 力矩上限 [N·m], 速度上限 [rad/s])
+    "joint1": (70.0, 2.75, 40.0, 16.754666),  # DM8009，大电机
+    "joint2": (70.0, 2.50, 40.0, 16.754666),  # DM8009
+    "joint3": (70.0, 2.00, 27.0, 5.445426),   # DM4340，中电机
+    "joint4": (60.0, 2.00, 27.0, 5.445426),   # DM4340
+    "joint5": (10.0, 0.70, 7.0, 20.943946),   # DM4310，小电机
+    "joint6": (10.0, 0.60, 7.0, 20.943946),   # DM4310（行程仅 ±45°，最易饱和）
+    "joint7": (10.0, 0.50, 7.0, 20.943946),   # DM4310
+}
+
+# 夹爪：真机是**单个**电机 + 丝杠（不是仿真里的两个平移关节），MIT 帧用
+# kp=50 N·m/rad、kd=1.0（`openarm_ws/README/deploy_packages/scripts/vr_bridge.py`
+# 的 `send_mit_frame(bus, 0x08, finger, 0.0, 50.0, 1.0, ...)`）；指令范围
+# −60°…−10°（共 50° = 0.8727 rad）对应手指行程 0…0.044 m，故传动比
+#   r = 0.044 / 0.8727 = 0.05042 m/rad
+# 把电机侧（旋转）量换算到关节侧（平移）：
+#   k[N/m]   = kp / r²      ≈ 19690    (= 50 / 0.05042²)
+#   c[N·s/m] = kd / r²      ≈   394    (= 1.0 / 0.05042²)
+#   F[N]     = τ_max / r    ≈   198    (电机 10 N·m)
+#   v[m/s]   = ω_max · r    ≈   1.51   (电机 30 rad/s)
+# ⚠️ 这组是**换算值**而非实测值，k 又直接决定夹紧盒子时的接触刚度 —— 上真机前建议
+#    用夹爪阶跃响应 / 夹持力做一次 sysid 校准。
+REAL_FINGER_DRIVE = (19690.0, 393.6, 198.0, 1.513)
+
+
+def _arm_drive_dicts(side: str) -> dict[str, dict[str, float]]:
+    """把 :data:`REAL_ARM_JOINT_DRIVE` 展开成 ImplicitActuatorCfg 需要的按关节字典。
+
+    键必须是**完整关节名**：Isaac Lab 用 ``re.fullmatch`` 匹配键，且 ``strict=True``
+    要求每个键都命中该组内的关节 —— 所以左右臂各建一份，不能共用。
+    """
+
+    def per_joint(idx: int) -> dict[str, float]:
+        # REAL_ARM_JOINT_DRIVE 的键已经含 "joint" 前缀（如 "joint1"）
+        return {f"openarm_{side}_{n}": v[idx] for n, v in REAL_ARM_JOINT_DRIVE.items()}
+
+    effort = per_joint(2)
+    velocity = per_joint(3)
+    return {
+        "stiffness": per_joint(0),
+        "damping": per_joint(1),
+        "joint_effort_limit": effort,
+        "actuator_effort_limit": effort,
+        "joint_velocity_limit": velocity,
+        "actuator_velocity_limit": velocity,
+    }
+
+
+def _finger_drive_dicts(side: str) -> dict[str, dict[str, float]]:
+    """夹爪两个平移手指关节的驱动参数（同一份换算值，见 :data:`REAL_FINGER_DRIVE`）。"""
+    stiffness, damping, effort, velocity = REAL_FINGER_DRIVE
+    names = [f"openarm_{side}_finger_joint1", f"openarm_{side}_finger_joint2"]
+    return {
+        "stiffness": dict.fromkeys(names, stiffness),
+        "damping": dict.fromkeys(names, damping),
+        "joint_effort_limit": dict.fromkeys(names, effort),
+        "actuator_effort_limit": dict.fromkeys(names, effort),
+        "joint_velocity_limit": dict.fromkeys(names, velocity),
+        "actuator_velocity_limit": dict.fromkeys(names, velocity),
+    }
+
+
+LEFT_ARM_DRIVE = _arm_drive_dicts("left")
+RIGHT_ARM_DRIVE = _arm_drive_dicts("right")
+LEFT_FINGER_DRIVE = _finger_drive_dicts("left")
+RIGHT_FINGER_DRIVE = _finger_drive_dicts("right")
+
+
+def _merged_drive(param: str) -> dict[str, float]:
+    """合并两侧臂+夹爪的某个参数（给 URDF 导入器烘焙初值用，它不分侧）。"""
+    merged: dict[str, float] = {}
+    for group in (LEFT_ARM_DRIVE, RIGHT_ARM_DRIVE, LEFT_FINGER_DRIVE, RIGHT_FINGER_DRIVE):
+        merged.update(group[param])
+    return merged
+
 
 @configclass
 class OpenArmFlipSceneCfg(InteractiveSceneCfg):
@@ -338,29 +441,26 @@ class OpenArmFlipSceneCfg(InteractiveSceneCfg):
         spawn=_robot_spawn_cfg(),
         init_state=ArticulationCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0), joint_pos=dict(OPENARM_HOME_POS)),
         actuators={
-            # 左臂 7 个转动关节（隐式 PD 位置控制：刚度 2000 N·m/rad、阻尼 100 N·m·s/rad）
+            # 左右臂各 7 个转动关节：**真机 kp/kd + 力矩/速度上限**（见上方
+            # REAL_ARM_JOINT_DRIVE 的注释与数值来源），不再是 2000/100 的刚性伺服。
+            # 换参数后旧 checkpoint 作废，需要重训。
             "left_arm": ImplicitActuatorCfg(
                 joint_names_expr=["openarm_left_joint[1-7]"],
-                stiffness=2000.0,
-                damping=100.0,
+                **LEFT_ARM_DRIVE,
             ),
-            # 右臂 7 个转动关节（参数同左臂）
             "right_arm": ImplicitActuatorCfg(
                 joint_names_expr=["openarm_right_joint[1-7]"],
-                stiffness=2000.0,
-                damping=100.0,
+                **RIGHT_ARM_DRIVE,
             ),
-            # 左手两个平移手指关节：刚度 5000（高于臂关节）保证夹紧盒子时位置误差小
+            # 左右手两个平移手指关节：单电机 + 丝杠，kp/kd 与力矩/速度上限按
+            # 传动比换算到关节侧（见 REAL_FINGER_DRIVE 注释）。
             "left_fingers": ImplicitActuatorCfg(
                 joint_names_expr=["openarm_left_finger_joint[1-2]"],
-                stiffness=5000.0,
-                damping=200.0,
+                **LEFT_FINGER_DRIVE,
             ),
-            # 右手两个平移手指关节（参数同左手）
             "right_fingers": ImplicitActuatorCfg(
                 joint_names_expr=["openarm_right_finger_joint[1-2]"],
-                stiffness=5000.0,
-                damping=200.0,
+                **RIGHT_FINGER_DRIVE,
             ),
         },
     )

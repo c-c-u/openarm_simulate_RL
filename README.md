@@ -98,8 +98,12 @@ openarm_lab/                          # 项目根 = Python 包 openarm_lab（在
   * 相机常量：`CAM_WIDTH/HEIGHT = 320×240`（展示/腕部相机）、
     `POLICY_CAM_WIDTH/HEIGHT = 96×72`（喂 CNN 的前视相机分辨率）、
     `FRONT_CAM_POS/TARGET`、`WRIST_CAM_LOCAL`。
-* **`OpenArmFlipSceneCfg`**：机器人（4 组 ImplicitActuator：左右臂刚度 2000/阻尼 100，
-  左右手指刚度 5000/阻尼 200）、桌子（运动学 pedestal，桌面 z = 0.38 m）、盒子
+* **`OpenArmFlipSceneCfg`**：机器人（4 组 ImplicitActuator，**已换成真机参数**：臂
+  kp/kd = 70/2.75、70/2.5、70/2.0、60/2.0、10/0.7、10/0.6、10/0.5，力矩上限
+  40/40/27/27/7/7/7 N·m，速度上限 16.75/16.75/5.45/5.45/20.9/20.9/20.9 rad/s；
+  手指由单电机+丝杠换算得 k=19690 N/m、c=394 N·s/m、F=198 N、v=1.51 m/s ——
+  详见 `REAL_ARM_JOINT_DRIVE` / `REAL_FINGER_DRIVE`）、桌子（运动学 pedestal，桌面
+  z = 0.38 m）、盒子
   （`parcel.usda`，质量 0.35 kg，开接触传感器）、地面、穹顶灯，以及**相机与接触传感器
   的占位字段**（由 `EnvCfg.__post_init__` 填充）。
 * **`StateObservationsCfg`（62 维，默认）/ `StateObservationsFullCfg`（68 维，兼容旧
