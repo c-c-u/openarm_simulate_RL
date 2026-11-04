@@ -13,7 +13,12 @@ from isaaclab.envs.mdp.events import (
 )
 
 from .actions import CoupledJointPositionActionCfg, CoupledJointPositionAction
-from .events import apply_scene_textures, reset_parcel_root_state, sync_wrist_cameras
+from .events import (
+    apply_scene_textures,
+    randomize_backdrop_textures,
+    reset_parcel_root_state,
+    sync_wrist_cameras,
+)
 from .observations import parcel_label_normal_w
 from .rewards import (
     arm_body_contact_penalty,
@@ -46,6 +51,9 @@ __all__ = [
     "randomize_rigid_body_material",
     "randomize_rigid_body_mass",
     "randomize_actuator_gains",
+    "apply_scene_textures",
+    "randomize_backdrop_textures",
+    "sync_wrist_cameras",
     # terminations
     "parcel_out_of_bound",
     "nan_state_guard",

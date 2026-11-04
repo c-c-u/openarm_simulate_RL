@@ -369,7 +369,11 @@ def apply_scene_textures(
         tex = spec.get("texture")
         if tex is None:
             continue
-        tex_path = _TEXTURE_DIR / f"{tex}.png"
+        # ``texture`` 可以是 _TEXTURE_DIR 下的名字（如 "floor"），也可以是**显式路径**
+        # —— 背景墙用的是真实场景照片（可能在任何目录、任何常见格式），不再强制 png。
+        tex_path = Path(str(tex)).expanduser()
+        if not tex_path.is_file():
+            tex_path = _TEXTURE_DIR / f"{tex}.png"
         if not tex_path.exists():
             print(f"[TEXTURE] 跳过 {spec.get('looks_name')}: 纹理不存在 {tex_path}", flush=True)
             continue
@@ -395,4 +399,43 @@ def apply_scene_textures(
                     continue
                 UsdShade.MaterialBindingAPI.Apply(prim).Bind(mat)
                 n_bound += 1
-        print(f"[TEXTURE] {spec['looks_name']}: 绑定到 {n_bound} 个 prim（纹理 {tex}.png）", flush=True)
+        print(f"[TEXTURE] {spec['looks_name']}: 绑定到 {n_bound} 个 prim（纹理 {tex_path.name}）", flush=True)
+
+
+# -----------------------------------------------------------------------------
+# 背景照片随机化（定期换一张）——缩小 sim->real 的背景外观差
+# -----------------------------------------------------------------------------
+def randomize_backdrop_textures(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor | None,
+    wall_looks: list | None = None,
+    images: list | None = None,
+) -> None:
+    """给每面背景墙重新挑一张真实场景照片（interval 事件，定期触发）。
+
+    ``wall_looks`` 是 ``["Backdrop_PlusXMat", ...]``（与 ``material_bindings`` 里的
+    ``looks_name`` 对应），``images`` 是照片路径列表。材质在 ``/World/Looks`` 下**全局共享**，
+    这里只改纹理文件路径，开销很小（不新建材质、不复制几何）。
+
+    为什么要随机：固定背景会让 CNN 把"某面墙的颜色/纹理"当成线索（"盒子旁边总是这种墙"），
+    换到真机立刻失效。因为是共享材质，这里是**全局换图**（所有环境一起换），不是每环境各换。
+
+    照片为空（没有拍到/没放图）时什么都不做，场景保持默认灰白背景。
+    """
+    if not wall_looks or not images:
+        return
+    import numpy as np
+    from pxr import Sdf
+
+    stage = env.scene.stage
+    rng = np.random.default_rng()
+    for looks_name, j in zip(wall_looks, rng.integers(0, len(images), size=len(wall_looks))):
+        prim = stage.GetPrimAtPath(f"/World/Looks/{looks_name}")
+        if not prim.IsValid():
+            continue
+        # 材质结构见 _make_texture_material：<Mat>/Tex 是一个 UsdUVTexture shader，
+        # 它的 inputs:file 就是要换的纹理路径。
+        for child in prim.GetChildren():
+            attr = child.GetAttribute("inputs:file")
+            if attr and attr.IsValid():
+                attr.Set(Sdf.AssetPath(str(images[int(j)])))

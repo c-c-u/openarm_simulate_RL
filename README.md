@@ -47,9 +47,16 @@ openarm_lab/                          # 项目根 = Python 包 openarm_lab（在
 │   └── camera_check.py               # 相机传感器输出校验
 ├── configs/
 │   └── rsl_rl_ppo.yaml               # PPO 超参参考清单（镜像 agents/rsl_rl_ppo_cfg.py）
+├── tools/                            # 一次性 / 离线工具（普通 python3 可跑）
+│   ├── make_textures.py              # 生成程序化纹理（标签/桌面/地面）
+│   ├── make_backdrop_usd.py          # 生成背景墙 USD（assets/scene/backdrop_wall.usda）
+│   ├── env_backdrop.py               # 背景墙布置/材质绑定计划（纯 Python，可单测）
+│   └── pose_sampler.py               # 位姿采样工具
 ├── assets/                           # 自包含资产（不依赖外部 demo 工程）
 │   ├── parcel/parcel.usda            # 带标签快递盒 USD（displayColor 着色，无材质绑定）
+│   ├── scene/backdrop_wall.usda      # 背景墙面板（薄 Cube + UV，无碰撞体）
 │   ├── textures/express_label.png    # 快递标签纹理资源
+│   ├── textures/env/*.jpg            # ★真实场景照片（CC0，背景墙用；见该目录 CREDITS.md）
 │   ├── urdf/openarm_bimanual_v1.urdf # 双臂 URDF（仅 ROBOT_SOURCE="urdf" 回退路径使用）
 │   ├── urdf/openarm_unimanual.urdf   # 单臂 URDF（项目附带资产，当前双臂任务未使用）
 │   └── usd/openarm_bimanual_v1_lab/  # URDF→USD 转换缓存（回退路径按需重新生成）
@@ -600,6 +607,33 @@ python3 tools/make_textures.py            # 重新生成全部纹理（--seed �
 在 `/World/Looks` 下创建**全局共享**的 PBR 材质（`UsdPreviewSurface` + `UsdUVTexture`），
 再按 `{ENV_REGEX_NS}` 正则绑定到各几何体。共享材质是刻意的——若把材质写进
 `parcel.usda`，1024 个环境会各自复制一份材质层级，白白增加开销。
+
+### 背景墙：真实场景照片（缩小 sim→real 外观差）
+
+视觉任务与感知数据的画面里不再只有"灰白空世界"：每个环境四周立四面贴**真实场景
+照片**的墙（`enable_backdrop`，默认开）。
+
+| 项 | 说明 |
+|---|---|
+| 照片 | `assets/textures/env/*.jpg`（6 张，ambientCG **CC0**：4 张墙面 + 2 张地面 → 见该目录 `CREDITS.md`）。换成自己现场拍的图：直接扔进这个目录，或 `export OPENARM_ENV_TEX_DIR=/data/real_photos` |
+| 墙 | `assets/scene/backdrop_wall.usda`（薄 Cube + 24 个 `primvars:st`，由 `tools/make_backdrop_usd.py` 生成）；**纯视觉、无碰撞体**，四个 `{ENV_REGEX_NS}/Backdrop_{Plus,Minus}{X,Y}` |
+| 位置 | 每面墙距环境原点 `BACKDROP_DISTANCE = 0.95 m`（必须 < `env_spacing/2`，否则邻居的墙会穿插），宽 1.9 × 高 1.6 m |
+| 随机化 | `EventCfg.randomize_backdrop`（interval 10–25 s）定期给每面墙换一张照片，防止 CNN 把"某面墙的颜色"当线索。材质全局共享，所以是**全局换图**，开销极小 |
+| 地面（可选） | `enable_backdrop_floor=True` 时地面改用 `floor_*.jpg` 真实照片（默认仍用程序化 `floor.png`） |
+
+实测（前视相机 640×480，1 env，4 张纯色替换法逐面核对）：
+
+| 检查 | 结果 |
+|---|---|
+| 前视相机看到的墙 | `Backdrop_PlusX` 占**画面 27.7%**（y 0–177 px，即画面上方 37%）—— 正是盒子背后那面 |
+| 侧墙 | `Backdrop_PlusY` 只在画面最左缘露出 0.7%；`MinusX`/`MinusY` 在相机身后，不可见 ✓ |
+| 对比无墙 | 画面上 1/3 均值 106.4 → **120.5**，RGB 由偏暖 (112,108,99) 变为中性 (121,120,120)（正是混凝土墙的色），"平坦块占比" 88.5% → 67.7%（背景不再是纯色） |
+| 物理 | 墙没有碰撞体，62/68 维状态观测与奖励数值**完全不受影响** |
+
+```bash
+# 换墙面尺寸时要同步重新生成资产
+python3 tools/make_backdrop_usd.py --width 1.9 --height 1.6
+```
 
 ### ⚠️ 两个必须知道的坑
 

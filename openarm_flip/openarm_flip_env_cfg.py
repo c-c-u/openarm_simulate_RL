@@ -48,6 +48,7 @@ from isaaclab.utils.noise import UniformNoiseCfg as Unoise
 from isaaclab.visualizers import VisualizerCfg
 
 from . import mdp
+from ..tools import env_backdrop as backdrop
 
 # Framework root (this directory): the framework is self-contained and does not
 # depend on openarm_sorting (it ships its own copy of the robot URDF and the
@@ -113,6 +114,40 @@ LABEL_UP_COS = float(math.cos(math.radians(15)))
 # "grasp" = both fingers of one gripper pinch the parcel.
 CONTACT_TOUCH_BONUS = 0.5
 CONTACT_GRASP_BONUS = 0.5
+
+# -----------------------------------------------------------------------------
+# 背景墙：真实场景照片（缩小 sim→real 的外观差 / 外观域随机化）
+# -----------------------------------------------------------------------------
+# 工作区四周立四面**真实场景照片**的墙（照片来自 `assets/textures/env/`，CC0，
+# 也可用 OPENARM_ENV_TEX_DIR 指向自己现场拍的图）。作用有两个：
+#   1. 视觉任务的画面上不再是"灰白空世界"，颜色/纹理分布接近真机背景；
+#   2. 配合 `EventCfg.randomize_backdrop` 定期换照片，CNN 学不到固定的背景线索。
+#
+# 为什么是四面 + 为什么在**每个环境内**各立一套：
+#   相机与腕部相机会朝向各个方向，只补一面会在别的视角露出空世界；而每个环境
+#   （`env_spacing` = 2 m，即半格 1.0 m）各自有一套墙，就不会看到邻居的墙。
+#   墙是**纯视觉几何（无碰撞体）**，对物理与状态观测零影响。
+#
+# 尺寸约束（重要）：`BACKDROP_DISTANCE` 必须 < env_spacing/2，墙宽也别超过
+# env_spacing，否则相邻环境的墙会互相穿插。改了墙的宽/高还要重跑
+# `python3 tools/make_backdrop_usd.py --width .. --height ..` 重新生成资产。
+BACKDROP_WALL_USD = LAB_ROOT / "assets" / "scene" / "backdrop_wall.usda"
+BACKDROP_DISTANCE = 0.95   # 墙到环境原点的水平距离（m）；须 < env_spacing/2 = 1.0
+BACKDROP_WIDTH = 1.9       # 墙宽（m），与 assets/scene/backdrop_wall.usda 一致
+BACKDROP_HEIGHT = 1.6      # 墙高（m），与资产一致
+BACKDROP_WALLS = backdrop.default_walls(
+    table_center=(0.0, 0.0),          # 以环境原点为中心（不是桌子），保证落在自己那格里
+    distance=BACKDROP_DISTANCE,
+    width=BACKDROP_WIDTH,
+    height=BACKDROP_HEIGHT,
+)
+# 墙名 -> OpenArmFlipSceneCfg 里的字段名
+BACKDROP_FIELD_NAMES = {
+    "Backdrop_PlusX": "backdrop_plus_x",
+    "Backdrop_MinusX": "backdrop_minus_x",
+    "Backdrop_PlusY": "backdrop_plus_y",
+    "Backdrop_MinusY": "backdrop_minus_y",
+}
 
 # -----------------------------------------------------------------------------
 # Cameras (same mounting as the openarm_sorting demo scene)
@@ -543,6 +578,13 @@ class OpenArmFlipSceneCfg(InteractiveSceneCfg):
     # 夹爪，允许碰盒），过滤到盒子，用于惩罚用大臂/前臂碰盒子。
     left_arm_contact: ContactSensorCfg | None = None
     right_arm_contact: ContactSensorCfg | None = None
+
+    # 背景墙占位字段（enable_backdrop=True 时由 __post_init__ -> _setup_backdrop() 填充）。
+    # 四面各一个实体、每环境一套；纯视觉（无碰撞体），照片材质在 startup 时绑定。
+    backdrop_plus_x: AssetBaseCfg | None = None
+    backdrop_minus_x: AssetBaseCfg | None = None
+    backdrop_plus_y: AssetBaseCfg | None = None
+    backdrop_minus_y: AssetBaseCfg | None = None
 
 
 # -----------------------------------------------------------------------------
@@ -985,6 +1027,20 @@ class EventCfg:
         },
     )
 
+    # --- 背景墙照片随机化（interval：每隔一段时间给每面墙换一张真实场景照片） ---
+    # 目的：让视觉策略/感知 CNN 学不到"某面墙总是某种颜色"这种线索（那种线索在真机上
+    # 一定失效）。材质在 /World/Looks 下**全局共享**，这里只改纹理文件路径，开销极小；
+    # 但也因为共享，它是"全局换图"而不是"每个环境各换一张"。
+    # 参数（wall_looks / images）由 OpenArmFlipEnvCfg.__post_init__ 按
+    # assets/textures/env/ 的实际内容填充；照片为空时本项自动什么都不做。
+    randomize_backdrop = EventTerm(
+        func=mdp.randomize_backdrop_textures,
+        mode="interval",
+        interval_range_s=(10.0, 25.0),
+        is_global_time=True,
+        params={"wall_looks": [], "images": []},
+    )
+
 
 # -----------------------------------------------------------------------------
 # Env
@@ -1033,6 +1089,20 @@ class OpenArmFlipEnvCfg(ManagerBasedRLEnvCfg):
     enable_contact_rewards: bool = True
     """生成盒子/手指接触传感器并启用一次性 touch/grasp 阶段奖励
     （见 mdp.rewards.parcel_contact_stage_bonus）。"""
+    enable_backdrop: bool = True
+    """在每个环境四周立四面贴**真实场景照片**的背景墙（见 BACKDROP_* 常量）。
+
+    墙是纯视觉几何（无碰撞体）：不影响物理、不影响 62/68 维状态观测，只影响渲染
+    —— 也就是只影响视觉策略与感知数据的画面。照片来自 ``assets/textures/env/``
+    （CC0，可用 ``OPENARM_ENV_TEX_DIR`` 换成自己现场拍的图）；目录为空时自动跳过，
+    场景回到"灰白空世界"。
+    """
+    enable_backdrop_floor: bool = False
+    """把地面也换成**真实地面照片**（``assets/textures/env/floor_*.jpg``）。
+
+    默认 False：地面继续用程序化 ``floor.png``（现有外观不变）。开启后地面改用
+    ``floor_*`` 里排序第一张照片（木地板/水泥地），配合背景墙构成完整"真实房间"。
+    """
     use_parcel_vel: bool = False
     """状态观测是否包含盒子的线速度/角速度。
 
@@ -1093,6 +1163,77 @@ class OpenArmFlipEnvCfg(ManagerBasedRLEnvCfg):
                 f"Parcel USD not found at {PARCEL_USD}. "
                 "Recreate it from the committed assets/parcel/parcel.usda."
             )
+        if self.enable_backdrop:
+            self._setup_backdrop()
+
+    def _setup_backdrop(self) -> None:
+        """在每个环境四周立四面背景墙，并给它们绑定真实场景照片。
+
+        做三件事：
+        1. 按 :data:`BACKDROP_WALLS` 的位姿 spawn ``assets/scene/backdrop_wall.usda``
+           （每个环境一套、四面各一个实体；**无碰撞体**，纯视觉）；
+        2. 把照片材质加进 ``apply_textures``（startup 事件）的绑定列表 —— 材质统一建在
+           ``/World/Looks`` 下全局共享，避免每个环境复制一份；
+        3. 把随机化事件 ``randomize_backdrop`` 的参数填上（照片列表 + 材质名），
+           让训练中定期换图。
+
+        找不到照片时不报错、只打印一行提示（场景退化为灰白背景，其它一切照常）。
+        """
+        images = backdrop.list_wall_images()
+        if not images:
+            print(
+                "[BACKDROP] 没找到真实场景照片，背景墙不生成。把图片放进 "
+                f"{backdrop.DEFAULT_ENV_TEX_DIR} 或设置 OPENARM_ENV_TEX_DIR 后重启。",
+                flush=True,
+            )
+            return
+        if not Path(BACKDROP_WALL_USD).exists():
+            raise FileNotFoundError(
+                f"Backdrop wall USD not found at {BACKDROP_WALL_USD}. "
+                "Regenerate it with `python3 tools/make_backdrop_usd.py`."
+            )
+
+        for wall in BACKDROP_WALLS:
+            field = BACKDROP_FIELD_NAMES[wall.name]
+            # 每个墙用独立的 spawn cfg 实例：场景管理器会往 spawn 里写 spawn_path，
+            # 共享同一个实例会互相覆盖。
+            setattr(
+                self.scene,
+                field,
+                AssetBaseCfg(
+                    prim_path="{ENV_REGEX_NS}/" + wall.name,
+                    spawn=sim_utils.UsdFileCfg(usd_path=str(BACKDROP_WALL_USD)),
+                    init_state=AssetBaseCfg.InitialStateCfg(
+                        pos=wall.center,
+                        # 面板局部 +Z 是法向，转到"朝向工作区"
+                        rot=backdrop.plane_quat_xyzw(wall.inward_normal),
+                    ),
+                ),
+            )
+
+        bindings = self.events.apply_textures.params.setdefault("material_bindings", [])
+        bindings.extend(
+            backdrop.material_bindings(
+                BACKDROP_WALLS,
+                images,
+                target_prefix="{ENV_REGEX_NS}",  # 每环境一套墙
+            )
+        )
+        if self.enable_backdrop_floor:
+            floors = backdrop.list_floor_images()
+            if floors:
+                for spec in bindings:
+                    if spec["looks_name"] == "FloorMat":
+                        spec["texture"] = str(floors[0])
+                print(f"[BACKDROP] 地面换成真实照片 {floors[0].name}", flush=True)
+            else:
+                print("[BACKDROP] enable_backdrop_floor=True 但没找到 floor_* 照片，地面保持原样",
+                      flush=True)
+        self.events.randomize_backdrop.params.update(
+            wall_looks=[f"{w.name}Mat" for w in BACKDROP_WALLS],
+            images=[str(p) for p in images],
+        )
+        print(backdrop.summary(BACKDROP_WALLS, images), flush=True)
 
     def _setup_cameras(self) -> None:
         """Create the front + wrist cameras (same mounts as the demo scene)."""
