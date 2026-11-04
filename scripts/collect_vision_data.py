@@ -157,6 +157,13 @@ parser.add_argument("--no_rerecord", action="store_true",
                     help="关闭『录制中发生环境自动 reset（如盒子被推下桌）就丢弃本回合重录』（默认开启）")
 parser.add_argument("--max_retries", type=int, default=5,
                     help="同一回合最多重录几次；超过就放弃该回合（记 0 帧），保证数据里不混入坏回合")
+parser.add_argument("--require_cam_visible_at_start", type=str, default="",
+                    help="要求这些相机在**每回合第一帧**就能看见盒子（逗号分隔，例如 "
+                         "front,wrist_left,wrist_right,top）。不满足就打印警告并计入统计——"
+                         "腕部相机的需求是『初始必须看得见、过程中不一定』，这条用于当场发现"
+                         "安装/朝向没调好，而不是等训完才发现")
+parser.add_argument("--min_start_visible", type=float, default=0.5,
+                    help="『初始看得见』的判据：盒子轮廓在画面内的占比 >= 该值")
 parser.add_argument("--drop_if_invisible_frames", type=int, default=20,
                     help="盒子**完全离开画面**连续超过这么多帧，就丢弃当前回合并重录（0=关闭）。"
                          "这类帧对位姿网络是废数据，且通常意味着该回合要失败；"
@@ -674,6 +681,9 @@ def main() -> None:
     n_invisible_drop = 0  # 因"盒子离开画面"而触发的重录次数
     n_invisible_frames = 0  # 因此丢弃的帧数
     n_occl_skipped = 0      # 因遮挡超阈值而未保存的帧数
+    # 每台相机"回合第一帧看得见"的统计（需求：腕部相机初始必须看见盒子）
+    start_vis_seen = {c: 0 for c in camera_keys}
+    start_vis_total = {c: 0 for c in camera_keys}
     inv_streak = np.zeros(n_envs, dtype=np.int64)  # 盒子连续不可见的帧数
     track_cam = "front" if "front" in camera_keys else camera_keys[0]
 
@@ -952,6 +962,14 @@ def main() -> None:
                     (cd["rgb"].shape[2], cd["rgb"].shape[1]),
                 )
                 push(f"{key}_parcel_visible_frac", float(vis[0].item()))
+                if step_e <= 1:                      # 本回合第一帧
+                    start_vis_total[key] += 1
+                    if float(vis[0].item()) >= args.min_start_visible:
+                        start_vis_seen[key] += 1
+                    elif key in [c.strip() for c in args.require_cam_visible_at_start.split(",") if c.strip()]:
+                        print(f"  [警告] env{e} ep{int(ep_index[e])}: 相机 {key} 在回合起始"
+                              f"看不见盒子（取景 {float(vis[0].item()):.2f} < {args.min_start_visible}）"
+                              f" —— 见 env cfg 里 WRIST_CAM_* 注释", flush=True)
 
                 if f < args.preview:
                     uv8, _ = project_to_pixels(
@@ -1011,6 +1029,18 @@ def main() -> None:
     print(f"[COLLECT] 采集完成：保留 {n_saved} 帧"
           f"{f'（录制 {frame_idx} 帧，丢弃 {frame_idx - n_saved} 帧）' if n_saved != frame_idx else ''}"
           f"，用时 {elapsed:.1f} s（{frame_idx / max(elapsed, 1e-6):.1f} 帧/s）", flush=True)
+
+    # ------------------------------------------------------------------ 起始可见性汇总
+    # 需求：腕部相机在**回合初始**必须能看见盒子（运动过程中允许看不见），
+    # 所以这里按相机逐一报告"回合第一帧盒子在画面内"的比例；低于 ~0.9 就该调
+    # WRIST_CAM_LOOKAT_FORWARD / WRIST_CAM_FOCAL / WRIST_CAM_LOCAL 了。
+    print("[COLLECT] 各相机『回合起始可见率』（多相机训练要求腕部相机初始可见）:", flush=True)
+    for key in camera_keys:
+        tot = start_vis_total[key]
+        seen = start_vis_seen[key]
+        rate = seen / tot if tot else float("nan")
+        flag = "OK  " if (tot and rate >= 0.9) else "WARN"
+        print(f"  [{flag}] {key:12s} {seen}/{tot} 回合起始看得见（取景 >= {args.min_start_visible}）", flush=True)
 
     # ------------------------------------------------------------------ 落盘
     arrays = {k: np.stack(v) if isinstance(v[0], (np.ndarray, list)) else np.asarray(v) for k, v in records.items()}
