@@ -243,7 +243,7 @@ def main() -> None:
     f = np.load(run_dir / "frames.npz")
     n = len(f["frame_index"])
     cams = list(info["cameras"])
-    size = info.get("parcel_size_m", [0.09, 0.09, 0.07])
+    size = info.get("parcel_size_m", [0.10, 0.10, 0.08])
     half = np.array(size, dtype=np.float64) / 2.0
     corners_local = _CORNER_SIGNS * half
     half_diag_mm = float(np.linalg.norm(half)) * 1000.0

@@ -9,7 +9,7 @@ Task layout (per env, Z-up, robot base at origin):
 * ``OpenArm``  — OpenArm v1.0 BIMANUAL robot (2 x 7 revolute arm joints + 2 x 2
   prismatic finger joints = 18 DOFs), fixed base at the env origin.
 * ``Table``    — kinematic pedestal in front of the robot (top at z = 0.38 m).
-* ``Parcel``   — rigid box (0.09 x 0.09 x 0.07 m) with an express label on its
+* ``Parcel``   — rigid box (0.10 x 0.10 x 0.08 m) with an express label on its
   local +Z face. It starts resting on the table with the label on a random
   face (one of the four sides, or facing down) and a random yaw. The robot has
   to flip it so the label ends up pointing up (+Z).
@@ -99,7 +99,16 @@ FINGER_ACTION_SCALE = 0.05  # m (official USD travel ~[0, 0.044] / [-0.0088, 0.0
 TABLE_POS = (0.30, 0.15, 0.35)
 TABLE_SIZE = (0.5, 0.7, 0.06)
 TABLE_TOP = TABLE_POS[2] + TABLE_SIZE[2] / 2.0  # 0.38 m
-PARCEL_SIZE = (0.09, 0.09, 0.07)
+PARCEL_SIZE = (0.10, 0.10, 0.08)
+"""快递盒尺寸 (x, y, z)，米。必须与 ``assets/parcel/parcel.usda`` 的 Body scale 一致。
+
+2026-11 由 0.09x0.09x0.07 放大到 **0.10x0.10x0.08**（更接近真实快递盒）。注意两个副作用：
+
+* **单爪已经夹不住它了**：平行夹爪满开约 0.10 m（finger origin ±0.006 + 行程 0.044），
+  盒子宽 0.10 m -> 爪只能"按住"，不能"围住"。这与后续"双臂挤压"的方向一致；
+* 底面 0.10x0.10 仍是正方形 -> 绕标签法向依旧有 90° 四重对称（C4），
+  ``twist_ablation.py`` / 感知侧的 C4 处理不受影响。
+"""
 # Env-local (x, y) the parcel is centred on. y = 0.10 keeps it close to the
 # robot centreline so both arms can reach it (the arms sit at y ~ +-0.03).
 PARCEL_XY = (0.30, 0.10)

@@ -85,7 +85,7 @@ def _load_events():
 
 EV = _load_events()
 
-PARCEL = (0.09, 0.09, 0.07)
+PARCEL = (0.10, 0.10, 0.08)  # 与 openarm_flip_env_cfg.PARCEL_SIZE 一致
 TABLE_POS = (0.3, 0.15, 0.0)
 TABLE_TOP = 0.30
 
@@ -159,7 +159,7 @@ def test_label_face_sets_orientation(face, expect_up):
         f"{label_normal[:, 2].numpy()}")
 
 
-@pytest.mark.parametrize("face,expect_rest", [("up", 0.035), ("down", 0.035), ("side", 0.045)])
+@pytest.mark.parametrize("face,expect_rest", [("up", 0.04), ("down", 0.04), ("side", 0.05)])
 def test_label_face_sets_rest_height(face, expect_rest):
     """静置高度：up/down 是局部 Z 竖直（sz/2），side 是翻转 90°（sx/2）。"""
     pos, _, _, _ = _place(face, n=8)

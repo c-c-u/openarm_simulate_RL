@@ -90,7 +90,7 @@ def build(run_dir: pathlib.Path, cam: str, fps: float, scale: float, overlay: bo
             raise SystemExit(f"[VIDEO] 回合 {episode} 没有帧")
 
     n = len(sel)
-    half = np.array(info.get("parcel_size_m", [0.09, 0.09, 0.07])) / 2.0
+    half = np.array(info.get("parcel_size_m", [0.10, 0.10, 0.08])) / 2.0
     corners_local = SIGNS * half
     pos_w = f["parcel_pos_w"] if "parcel_pos_w" in f else (
         f["parcel_pos_env"] + f["env_origin"] if "env_origin" in f else f["parcel_pos_env"])

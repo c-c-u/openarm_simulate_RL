@@ -37,7 +37,7 @@ plan_states = ps.plan_states
 plan_summary = ps.plan_summary
 rest_height = ps.rest_height
 
-PARCEL = (0.09, 0.09, 0.07)
+PARCEL = (0.10, 0.10, 0.08)  # 与 openarm_flip_env_cfg.PARCEL_SIZE 一致
 
 
 def test_plan_counts_and_faces():
@@ -86,9 +86,9 @@ def test_yaw_is_uniform():
 
 def test_rest_height_matches_events_convention():
     """必须与 ``events.py::reset_parcel_root_state`` 的 rest 计算一致。"""
-    assert rest_height("side", PARCEL) == pytest.approx(PARCEL[0] / 2)   # 0.045
-    assert rest_height("up", PARCEL) == pytest.approx(PARCEL[2] / 2)     # 0.035
-    assert rest_height("down", PARCEL) == pytest.approx(PARCEL[2] / 2)   # 0.035
+    assert rest_height("side", PARCEL) == pytest.approx(PARCEL[0] / 2)   # 0.05
+    assert rest_height("up", PARCEL) == pytest.approx(PARCEL[2] / 2)     # 0.04
+    assert rest_height("down", PARCEL) == pytest.approx(PARCEL[2] / 2)   # 0.04
     with pytest.raises(ValueError):
         rest_height("tilted", PARCEL)
 

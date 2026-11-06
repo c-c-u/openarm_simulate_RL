@@ -9,7 +9,7 @@
 #
 # * /Parcel           — rigid body (RigidBodyAPI; mass/inertia configured by the
 #                        Isaac Lab RigidObjectCfg at spawn time).
-# * /Parcel/Body      — the box (0.09 x 0.09 x 0.07 m), the only collider.
+# * /Parcel/Body      — the box (0.10 x 0.10 x 0.08 m), the only collider.
 # * /Parcel/Label     — visual-only "express label" on the local +Z face
 #                        (no collision). The local +Z face is the "label face"
 #                        the RL task must rotate to point up.
@@ -40,7 +40,8 @@ def Xform "Parcel" (
     )
     {
         double size = 1  # default is 2 (extent -1..1) -> scale would double
-        float3 xformOp:scale = (0.09, 0.09, 0.07)
+        # 尺寸：0.10 (x) x 0.10 (y) x 0.08 (z) m —— 必须与 openarm_flip_env_cfg.PARCEL_SIZE 一致
+        float3 xformOp:scale = (0.10, 0.10, 0.08)
         uniform token[] xformOpOrder = ["xformOp:scale"]
         color3f[] primvars:displayColor = [(0.66, 0.45, 0.24)]  # kraft brown（盒子就用这个纯色）
         # 6 面 x 4 角 = 24 个 UV
@@ -61,9 +62,13 @@ def Xform "Parcel" (
         double size = 1
         # xformOpOrder = [scale, translate] composes as M = S * T: the translate
         # is applied in the pre-scale frame and multiplied by the z-scale, so
-        # 70.4 * 0.0005 = 0.0352 m -> label center just above the box top face.
-        float3 xformOp:scale = (0.078, 0.048, 0.0005)
-        double3 xformOp:translate = (0, 0, 70.4)
+        # 80.4 * 0.0005 = 0.0402 m -> label center just above the box top face
+        # (box half height 0.08/2 = 0.04, +0.2 mm gap).
+        # 标签面积按盒子放大比例同比缩放（原来 0.078x0.048 在 0.09 面上，
+        # 占面宽 87% / 53% -> 在 0.10 面上为 0.0867 x 0.0533），保证画面里
+        # 标签像素占比与之前一致。
+        float3 xformOp:scale = (0.0867, 0.0533, 0.0005)
+        double3 xformOp:translate = (0, 0, 80.4)
         uniform token[] xformOpOrder = ["xformOp:scale", "xformOp:translate"]
         color3f[] primvars:displayColor = [(1.0, 1.0, 1.0)]  # fallback colour
         # 可见面是 +Z（标签朝上那面）；UV 同样 6 面 x 4 角
